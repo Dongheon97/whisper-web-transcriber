@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Video Transcription (Whisper)</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    /* Dropzone-ish dashed border animation */
+    .dz-active { outline: 3px solid rgba(59,130,246,.35); outline-offset: 2px; }
+  </style>
+</head>
+
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div class="mx-auto max-w-3xl px-4 py-10">
+    <!-- Header -->
+    <div class="mb-8">
+      <h1 class="text-2xl font-semibold tracking-tight">Video Transcription</h1>
+      <p class="mt-1 text-sm text-slate-600">
+        Upload a lecture video and download a plain <span class="font-medium">.txt</span> transcript.
+      </p>
+    </div>
+
+    <!-- Card -->
+    <div class="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div class="p-6">
+        <!-- Dropzone -->
+        <div
+          id="dropzone"
+          class="relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center transition"
+        >
+          <div class="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
+            <svg class="h-6 w-6 text-slate-700" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v12m0-12 4 4m-4-4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4 15.5v2A3.5 3.5 0 0 0 7.5 21h9A3.5 3.5 0 0 0 20 17.5v-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+          </div>
+
+          <p class="mt-3 text-sm">
+            <span class="font-medium">Drag & drop</span> your video here, or
+            <button id="browseBtn" class="font-medium text-blue-600 hover:text-blue-700">browse</button>
+          </p>
+          <p class="mt-1 text-xs text-slate-500">
+            MP4 / MKV / MOV — large files are OK.
+          </p>
+
+          <input id="fileInput" type="file" accept="video/*" class="hidden" />
+        </div>
+
+        <!-- Selected file row -->
+        <div id="fileRow" class="mt-4 hidden items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <div class="min-w-0">
+            <p id="fileName" class="truncate text-sm font-medium"></p>
+            <p id="fileMeta" class="text-xs text-slate-500"></p>
+          </div>
+          <button id="clearBtn" class="ml-4 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+            Clear
+          </button>
+        </div>
+
+        <!-- Buttons -->
+        <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-center gap-2">
+            <span id="statusPill" class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+              Idle
+            </span>
+            <span id="statusText" class="text-sm text-slate-600">Choose a video to start.</span>
+          </div>
+
+          <div class="flex gap-2">
+            <button
+              id="uploadBtn"
+              class="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled
+            >
+              Upload & Transcribe
+            </button>
+
+            <a
+              id="downloadBtn"
+              class="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 pointer-events-none opacity-50"
+              href="#"
+              download
+            >
+              Download TXT
+            </a>
+          </div>
+        </div>
+
+        <!-- Upload progress -->
+        <div class="mt-6">
+          <div class="flex items-center justify-between">
+            <p class="text-sm font-medium">Upload</p>
+            <p id="uploadPct" class="text-sm text-slate-600">0%</p>
+          </div>
+          <div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div id="uploadBar" class="h-full w-0 rounded-full bg-blue-600 transition-[width]"></div>
+          </div>
+        </div>
+
+        <!-- Processing progress -->
+        <div class="mt-5">
+          <div class="flex items-center justify-between">
+            <p class="text-sm font-medium">Processing</p>
+            <p id="procPct" class="text-sm text-slate-600">0%</p>
+          </div>
+          <div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div id="procBar" class="h-full w-0 rounded-full bg-emerald-600 transition-[width]"></div>
+          </div>
+          <p id="procDetail" class="mt-2 text-xs text-slate-500">Not started.</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-6 text-center text-xs text-slate-500">
+      © 2026 Dongheon Lee. All rights reserved.
+    </p>
+  </div>
+
+  <script>
+    // =========================
+    // Config (edit if needed)
+    // =========================
+    const API = {
+      upload: "/upload",
+      events: "/events",     // SSE: /events?job_id=...&token=...
+      download: "/download", // GET: /download?job_id=...&token=...
+      status: "/status"      // optional
+    };
+
+    // =========================
+    // Elements
+    // =========================
+    const dropzone   = document.getElementById("dropzone");
+    const fileInput  = document.getElementById("fileInput");
+    const browseBtn  = document.getElementById("browseBtn");
+    const uploadBtn  = document.getElementById("uploadBtn");
+    const clearBtn   = document.getElementById("clearBtn");
+    const fileRow    = document.getElementById("fileRow");
+    const fileNameEl = document.getElementById("fileName");
+    const fileMetaEl = document.getElementById("fileMeta");
+
+    const statusPill = document.getElementById("statusPill");
+    const statusText = document.getElementById("statusText");
+
+    const uploadPct  = document.getElementById("uploadPct");
+    const uploadBar  = document.getElementById("uploadBar");
+
+    const procPct    = document.getElementById("procPct");
+    const procBar    = document.getElementById("procBar");
+    const procDetail = document.getElementById("procDetail");
+
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    // =========================
+    // State
+    // =========================
+    let selectedFile = null;
+    let currentJob = null; // { job_id, token }
+    let eventSource = null;
+
+    // =========================
+    // Helpers
+    // =========================
+    function bytesToHuman(n) {
+      const units = ["B","KB","MB","GB","TB"];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    function setStatus(kind, text) {
+      // kind: idle | ready | uploading | processing | done | error | busy
+      const styles = {
+        idle:       "bg-slate-100 text-slate-700",
+        ready:      "bg-indigo-100 text-indigo-700",
+        uploading:  "bg-blue-100 text-blue-700",
+        processing: "bg-emerald-100 text-emerald-700",
+        done:       "bg-emerald-100 text-emerald-700",
+        error:      "bg-rose-100 text-rose-700",
+        busy:       "bg-amber-100 text-amber-700",
+      };
+      statusPill.className = `inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${styles[kind] || styles.idle}`;
+      statusPill.textContent = kind.charAt(0).toUpperCase() + kind.slice(1);
+      statusText.textContent = text;
+    }
+
+    function setProgress(which, pct) {
+      const clamped = Math.max(0, Math.min(100, pct));
+      if (which === "upload") {
+        uploadPct.textContent = `${clamped.toFixed(0)}%`;
+        uploadBar.style.width = `${clamped}%`;
+      } else {
+        procPct.textContent = `${clamped.toFixed(1)}%`;
+        procBar.style.width = `${clamped}%`;
+      }
+    }
+
+    function resetUI(full = false) {
+      setProgress("upload", 0);
+      setProgress("proc", 0);
+      procDetail.textContent = "Not started.";
+
+      downloadBtn.href = "#";
+      downloadBtn.classList.add("pointer-events-none", "opacity-50");
+
+      if (full) {
+        selectedFile = null;
+        fileInput.value = "";
+        fileRow.classList.add("hidden");
+        uploadBtn.disabled = true;
+        setStatus("idle", "Choose a video to start.");
+      }
+    }
+
+    function enableDownload(url) {
+      downloadBtn.href = url;
+      downloadBtn.classList.remove("pointer-events-none", "opacity-50");
+    }
+
+    function stopSSE() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    }
+
+    // =========================
+    // Dropzone events
+    // =========================
+    browseBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      fileInput.click();
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files[0]) {
+        onFileSelected(fileInput.files[0]);
+      }
+    });
+
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dz-active");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dz-active"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dz-active");
+      const f = e.dataTransfer?.files?.[0];
+      if (f) onFileSelected(f);
+    });
+
+    clearBtn.addEventListener("click", () => {
+      stopSSE();
+      currentJob = null;
+      resetUI(true);
+    });
+
+    function onFileSelected(file) {
+      selectedFile = file;
+
+      fileNameEl.textContent = file.name;
+      fileMetaEl.textContent = `${bytesToHuman(file.size)} • ${file.type || "video"}`;
+      fileRow.classList.remove("hidden");
+
+      uploadBtn.disabled = false;
+      setStatus("ready", "Ready to upload.");
+      resetUI(false);
+    }
+
+    // =========================
+    // Upload & start transcription
+    // =========================
+    uploadBtn.addEventListener("click", () => {
+      if (!selectedFile) return;
+      stopSSE();
+      currentJob = null;
+      resetUI(false);
+
+      setStatus("uploading", "Uploading video…");
+      uploadBtn.disabled = true;
+
+      // Use XHR to get upload progress
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", API.upload, true);
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const pct = (evt.loaded / evt.total) * 100;
+          setProgress("upload", pct);
+        }
+      };
+
+      xhr.onerror = () => {
+        setStatus("error", "Upload failed (network error).");
+        uploadBtn.disabled = false;
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          setProgress("upload", 100);
+
+          let data = null;
+          try { data = JSON.parse(xhr.responseText || "{}"); } catch {}
+          // Expected: { job_id: "...", token: "...", message?: "...", queued?: bool }
+          const job_id = data?.job_id;
+          const token  = data?.token;
+
+          if (!job_id || !token) {
+            setStatus("error", "Upload succeeded but server response missing job_id/token.");
+            uploadBtn.disabled = false;
+            return;
+          }
+
+          currentJob = { job_id, token };
+          localStorage.setItem(
+            "whisper_last_job",
+            JSON.stringify({ job_id, token })
+          );
+          localStorage.setItem("whisper_last_saved_at", String(Date.now()));
+          setStatus("processing", "Processing audio…");
+          procDetail.textContent = "Starting transcription…";
+
+          startSSE(job_id, token);
+        } else if (xhr.status === 409) {
+          // Optional: server can return 409 if busy
+          setStatus("busy", "Server is currently busy. Please try again later.");
+          uploadBtn.disabled = false;
+        } else {
+          setStatus("error", `Upload failed (HTTP ${xhr.status}).`);
+          uploadBtn.disabled = false;
+        }
+      };
+
+      const form = new FormData();
+      form.append("file", selectedFile);
+      xhr.send(form);
+    });
+
+    // =========================
+    // SSE: progress updates
+    // =========================
+    function startSSE(job_id, token) {
+      stopSSE();
+
+      const url = `${API.events}?job_id=${encodeURIComponent(job_id)}&token=${encodeURIComponent(token)}`;
+      try {
+        eventSource = new EventSource(url);
+      } catch (e) {
+        setStatus("error", "Failed to connect to progress stream (SSE).");
+        uploadBtn.disabled = false;
+        return;
+      }
+
+      // Expected SSE event data examples:
+      // event: progress
+      // data: {"processed_sec":123, "total_sec":5400, "progress_pct":2.3, "detail":"..."}
+      //
+      // event: done
+      // data: {"download_url":"/download?job_id=...&token=..."}
+      //
+      // event: error
+      // data: {"message":"..."}
+      eventSource.addEventListener("queued", (evt) => {
+      try {
+          const q = JSON.parse(evt.data || "{}");
+          setStatus("processing", "Queued… waiting for your turn.");
+          procDetail.textContent = `In queue: ${q.position_ahead} ahead • total ${q.queue_length}`;
+      } catch {}
+      });
+
+      eventSource.addEventListener("progress", (evt) => {
+        try {
+          const p = JSON.parse(evt.data || "{}");
+          const pct = typeof p.progress_pct === "number" ? p.progress_pct : 0;
+          setProgress("proc", pct);
+
+          const ps = p.processed_sec ?? null;
+          const ts = p.total_sec ?? null;
+
+          if (ps != null && ts != null) {
+            procDetail.textContent = `${fmtTime(ps)} / ${fmtTime(ts)} (${pct.toFixed(1)}%)`;
+          } else if (p.detail) {
+            procDetail.textContent = p.detail;
+          } else {
+            procDetail.textContent = "Processing…";
+          }
+        } catch {
+          // ignore malformed
+        }
+      });
+
+      eventSource.addEventListener("done", (evt) => {
+        try {
+          const d = JSON.parse(evt.data || "{}");
+          const downloadUrl = d.download_url || `${API.download}?job_id=${encodeURIComponent(job_id)}&token=${encodeURIComponent(token)}`;
+          setProgress("proc", 100);
+          setStatus("done", "Completed. Download your transcript.");
+          procDetail.textContent = "Done.";
+          enableDownload(downloadUrl);
+        } catch {
+          setProgress("proc", 100);
+          setStatus("done", "Completed. Download your transcript.");
+          enableDownload(`${API.download}?job_id=${encodeURIComponent(job_id)}&token=${encodeURIComponent(token)}`);
+        } finally {
+          stopSSE();
+          uploadBtn.disabled = false;
+        }
+      });
+
+      eventSource.addEventListener("error", (evt) => {
+        // Native SSE "error" also fires on disconnect; handle gracefully
+        // If server sends custom event "error" with data, we can parse it.
+        // Here: try parse message; otherwise show a generic message.
+        let msg = "Progress stream disconnected.";
+        try {
+          if (evt?.data) {
+            const e = JSON.parse(evt.data || "{}");
+            msg = e.message || msg;
+          }
+        } catch {}
+        setStatus("error", msg);
+        uploadBtn.disabled = false;
+        stopSSE();
+      });
+    }
+
+    function fmtTime(seconds) {
+      const s = Math.max(0, Math.floor(seconds));
+      const hh = Math.floor(s / 3600);
+      const mm = Math.floor((s % 3600) / 60);
+      const ss = s % 60;
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+    }
+
+    // =========================
+    // Restore last job after refresh
+    // =========================
+    (function restoreLastJob() {
+      const saved = localStorage.getItem("whisper_last_job");
+      const savedAt = parseInt(localStorage.getItem("whisper_last_saved_at") || "0", 10);
+      if (!saved || !savedAt) return;
+
+      // 10 minute grace period (same as server cleanup)
+      if (Date.now() - savedAt > 10 * 60 * 1000) {
+        localStorage.removeItem("whisper_last_job");
+        localStorage.removeItem("whisper_last_saved_at");
+        return;
+      }
+
+      try {
+        const { job_id, token } = JSON.parse(saved);
+        if (!job_id || !token) throw new Error("invalid saved job");
+
+        currentJob = { job_id, token };
+        setStatus("processing", "Restored previous job…");
+        procDetail.textContent = "Reconnecting…";
+        startSSE(job_id, token);
+      } catch {
+        localStorage.removeItem("whisper_last_job");
+        localStorage.removeItem("whisper_last_saved_at");
+      }
+    })();
+
+    // Start clean
+    resetUI(true);
+  </script>
+</body>
+</html>
